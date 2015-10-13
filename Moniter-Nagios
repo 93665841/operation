@@ -1,0 +1,438 @@
+#!/bin/bash
+#===============================================================================
+#
+#          FILE: TMAC
+#
+#   DESCRIPTION: Nagios shell script.                                  
+#        AUTHOR: TracyMcGrady
+#          MAIL: zhangzuogao@egeio.com
+#       COMPANY: yifangyun,Inc
+#       CREATED: 08/18/2014 12:45:00 PM CST
+#      REVISION: R_02
+#===============================================================================
+
+declare -a -r Mservices=(check_load check_users check_mem check_disks check_traffic)
+declare -a -r Gservices=(check_load check_users check_mem check_disks check_traffic)
+#set [-v][+x][-x][-n]
+#set -xv
+. /etc/rc.d/init.d/functions
+: ${LOG:=/tmp/log}
+: ${ADMIN:=bigbangyun}
+: ${USERS:=yifangyun}
+: ${BACKUP_DIR:=/backup}
+: ${ERROR_LOG:=/tmp/error.log}
+: ${DATE:=$(date +"%Y%m%d%H%M")}
+: ${BATCH_LIST:=/tmp/batch_list}
+: ${HOSTS:=/usr/local/nagios/etc/objects/hosts.cfg}
+: ${SERVICES:=/usr/local/nagios/etc/objects/services.cfg}
+: ${HOSTGROUPS:=/usr/local/nagios/etc/objects/hostgroups.cfg}
+: ${CONTACTGROUPS:=/usr/local/nagios/etc/objects/contactgroups.cfg}
+
+
+help()
+{            
+cat << EOF
+================================================================================
+Usage:
+
+Yifangyun    [ --? ]
+
+             [ --add_host "..." ]
+             [ --add_services "..." ]
+             [ --del_services "..." ]
+             [ --del_all_service "..." ]
+             [ --batch_add_host "..." ]
+             [ * help ]
+             [ "..." ]
+             
+             
+             
+        package(s)
+=================================================================================
+EOF
+}
+
+function cprintf
+{
+  case $1 in 
+    r) shift;printf "\e[31;49;1m$1 \033[39;49;0m\n" ;;
+    g) shift;printf "\e[32;49;1m$1 \033[39;49;0m\n" ;;
+    y) shift;printf "\e[33;49;1m$1 \033[39;49;0m" ;;
+    b) shift;printf "\e[34;49;1m$1 \033[39;49;0m\n" ;;
+  esac
+}
+
+ywaring()
+{
+    clear
+    printf "\e[33;49;1m-------------------------------------Waring----------------------------------------\033[39;49;0m\n"
+    printf "\e[33;49;1m                     $1\n"
+    printf "\e[33;49;1m-----------------------------------------------------------------------------------\033[39;49;0m\n"
+}
+
+read_printf()
+{
+#a=(hostname alias address hostgroups)
+#b=0
+  for i in $@
+  do
+    cprintf y "Please input $i:"
+    read $i
+#      while [[ -z ${a[$b]} ]]
+#      do  
+#        printf "${a[$b]} is null\n"
+#        ((b++))
+#      done
+  done
+}
+
+sure()
+{
+  if [[ $# = 2 ]];then
+    cprintf y "Are you sure $1   $2      (y/n)?"
+    read check
+    while [[ "$check" = [nN] ]]
+    do
+      add_host
+      cprintf y "Are you sure $1   $2      (y/n)?"
+      read check
+    done
+  elif [[ $# = 1 ]];then
+    cprintf y "Are you sure $1      (y/n)?" && read check
+    [[ "$check" = [nN] ]] && exit
+  fi
+}
+
+warning()
+{
+    
+  if [[ $# = 2 ]];then
+     [[ "$1" = 0 ]] && action "$2" /bin/true || action "$2" /bin/false
+  elif [[ $# = 1 ]];then
+     icontent=$(cat $ERROR_LOG)
+     [[ -n "$icontent" ]] && action "$1" /bin/false && cat $ERROR_LOG >> $LOG && rm -rf $ERROR_LOG && exit || action "$1" /bin/true
+  fi
+}
+
+function add_host
+{
+    cprintf y "Please select a type of OS. \n(1)Linux\n(2)Windows\n" && read os
+    [[ $os != [12] ]] && cprintf r "Faild..Please Choose Linux or Windows." && sleep 3 && clear && add_host
+    read_printf "hostname" "alias" "address" "hostgroups" "contactgroups"
+    sure "add  HOSTNAME:$hostname" "IP:$address   hostgroups:$hostgroups"
+    [[ -n $(egrep "$hostname$address" $HOSTS) ]] && cprintf r "Hostname:$hostname IP:$address already exist.." && exit
+    [[ -z $(egrep "hostgroup_name *$hostgroups" $HOSTGROUPS) ]] && cprintf r "Hostgroups $hostgroups not exist.." && exit
+    [[ -z $(egrep "contactgroup_name *$contactgroups" $CONTACTGROUPS) ]] && cprintf r "Contactgroups $contactgroups not exist.." && exit
+    sed -i '/hostgroup_name *'$hostgroups'/{n;n;s/$/,'$hostname'/}' $HOSTGROUPS 2>$ERROR_LOG
+    warning "Add the $hostname to $hostgroups:"
+  if [[ $os = 1 ]];then
+    hosts "$hostname" "$alias" "$address" "$contactgroups" && add_services "$hostname" "$contactgroups"
+  elif [[ $os = 2 ]];then
+    hosts "$hostname" "$alias" "$address" "$contactgroups" && W_add_services "$hostname" "$contactgroups"
+  fi
+}
+
+function add_services
+{
+  if (($# <= 0));then
+    read_printf "hostname" "contactgroups"
+  else 
+  hostname=$1
+  contactgroups=$2 
+  fi
+    ywaring "Add monitored services and information for \"$hostname\""
+    PS3="Select a monitor service: (Ctrl+C to exit)"
+  select i in ${Mservices[@]}
+    do
+      case $i in
+        check_load)       aservices "$hostname" "$i" "$contactgroups" ;;
+        check_users)      aservices "$hostname" "$i" "$contactgroups" ;;
+        check_mem)        aservices "$hostname" "$i" "$contactgroups" ;;
+        check_disks)      aservices "$hostname" "$i" "$contactgroups" ;;
+        check_traffic)    aservices "$hostname" "$i" "$contactgroups" ;;
+        *) 
+        echo -e "\n$REPLY is not one of your choices" 1>&2 
+        ;;
+      esac
+    done
+}
+
+function aservices
+{
+  if [[ -z $(egrep "$1 *$" $HOSTS) ]];then
+    printf "\e[33;49;1mHost:$1 has not been monitoring, Please add it first.\033[39;49;0m\n"
+    exit
+  elif [[ -n $(grep "$1$2" $SERVICES) ]];then
+    printf "\e[33;49;1mHost:$1\nService:$2 \033[39;49;0m  has already been monitored.\n"
+  else
+    services "$1" "$2" "$3" 2>$ERROR_LOG
+    warning "Add The Monitoring Service $2:" 
+  fi
+}
+
+function del_services
+{
+    [[ $# -le 0 ]] && printf "Please input hostname:" && read hostname && [[ -z "$hostname" ]] && cprintf r "Hostname not null." && exit
+    PS3="Select a monitoring service delete: (Ctrl+C to exit)"
+  select i in ${Mservices[@]}
+    do
+      case $i in
+        check_load)      dservices "$hostname" "$i" ;;
+        check_users)     dservices "$hostname" "$i" ;;
+        check_mem)       dservices "$hostname" "$i" ;;
+        check_disks)     dservices "$hostname" "$i" ;;
+        check_traffic)   dservices "$hostname" "$i" ;;
+        *)
+        echo -e "\n$REPLY is not one of your choices" 1>&2
+        ;;
+      esac
+    done
+}
+
+function del_all_services
+{
+  printf "Please input hostname:" && read hostname && [[ -z "$hostname" ]] && cprintf r "Hostname not null." && exit
+  sure "delete  Host:$hostname  all monitoring service"
+  for i in ${Mservices[@]}
+  do
+    sed -i $(sed -n /$hostname$i/= $SERVICES),+13d $SERVICES 2>$ERROR_LOG
+    warning "Delete The Monitoring Service $i:"
+  done
+}
+
+function dservices
+{
+  if [[ -n $(grep "$1$2" $SERVICES) ]];then
+    sure "delete  Host:$1   service:$2"
+    sed -i $(sed -n /$1$2/= $SERVICES),+13d $SERVICES 2>$ERROR_LOG
+    warning "Delete The Monitoring Service $2:"
+  else 
+    printf "\e[33;49;1mHost:$1\nService:$2 \033[39;49;0m  is not monitored.\n"
+  fi
+}
+
+function batch_add_host
+{
+  sure "batch import monitoring data"
+    while read line 
+    do
+      hostname=$(echo $line | awk '{print $1}')
+      alias=$(echo $line | awk '{print $2}')
+      address=$(echo $line | awk '{print $3}')
+      hostgroups=$(echo $line | awk '{print $4}')
+      contactgroups=$(echo $line | awk '{print $5}')
+      os=$(echo $line | awk '{print $6}')
+      [[ -n $(egrep "$hostname$address" $HOSTS) ]] && cprintf r "Adding the $hostname faild... Hostname:$hostname IP:$address already exist.." && continue
+      [[ -z $(egrep "hostgroup_name *$hostgroups" $HOSTGROUPS) ]] && cprintf r "Adding the $hostname faild... Hostgroups $hostgroups not exist.." && continue
+      [[ -z $(egrep "contactgroup_name *$contactgroups" $CONTACTGROUPS) ]] && cprintf r "Adding the $hostname faild... Contactgroups $contactgroups not exist.." && continue
+      sed -i '/hostgroup_name *'$hostgroups'/{n;n;s/$/,'$hostname'/}' $HOSTGROUPS 2>$ERROR_LOG
+      warning "Adding the $hostname:"
+      hosts "$hostname" "$alias" "$address" "$contactgroups"
+      if [[ $os = "Linux" ]];then
+        for i in ${Gservices[@]}
+        do
+          aservices "$hostname" "$i" "$contactgroups"
+        done
+      else
+        W_add_services "$hostname" "$contactgroups"
+      fi
+    done < $BATCH_LIST
+}
+
+function hosts
+{
+cat << EOF >> $HOSTS
+##############################$1$3#####################################
+define host{
+        use                     linux-server,host-pnp
+        host_name               $1
+        alias                   $2
+        address                 $3
+        contact_groups          $4
+        check_command           check-host-alive
+}
+EOF
+}
+
+function services
+{
+cat << EOF >> $SERVICES
+##############################$1$2#####################################
+define service{
+        use                     generic-service,srv-pnp
+        host_name               $1
+        service_description     $2
+        check_command           check_nrpe!$2
+        contact_groups          $3
+}
+EOF
+}
+
+function W_add_services
+{
+cat << EOF >> $SERVICES
+##############################windows$1#####################################
+define service{
+        host_name               $1
+        service_description     ping
+        check_command           check-host-alive
+        max_check_attempts      5
+        normal_check_interval   5
+        retry_check_interval    2
+        check_period            24x7
+        notification_interval   10
+        notification_period     24x7
+        notification_options    w,u,c,r
+        contact_groups          $2
+        }
+##############################windows$1#####################################
+define service{
+        host_name               $1
+        service_description     check_load
+        check_command           check_nt!CPULOAD!-l 5,70,80
+        max_check_attempts      5
+        normal_check_interval   5
+        retry_check_interval    2
+        check_period            24x7
+        notification_interval   10
+        notification_period     24x7
+        notification_options    w,u,c,r
+        contact_groups          $2
+       }
+##############################windows$1#####################################
+define service{
+        host_name               $1
+        service_description     check_mem
+        check_command           check_nt!MEMUSE!-w 70 -c 80
+        max_check_attempts      5
+        normal_check_interval   5
+        retry_check_interval    2
+        check_period            24x7
+        notification_interval   10
+        notification_period     24x7
+        notification_options    w,u,c,r
+        contact_groups          $2
+        }
+##############################windows$1#####################################
+define service{
+        host_name               $1
+        service_description     check_disk_c
+        check_command           check_nt!USEDDISKSPACE!-l c -w 70 -c 80
+        max_check_attempts      5
+        normal_check_interval   5
+        retry_check_interval    2
+        check_period            24x7
+        notification_interval   10
+        notification_period     24x7
+        notification_options    w,u,c,r
+        contact_groups          $2
+        }
+##############################windows$1#####################################
+define service{
+        host_name               $1
+        service_description     check_disk_d
+        check_command           check_nt!USEDDISKSPACE!-l d -w 70 -c 80
+        max_check_attempts      5
+        normal_check_interval   5
+        retry_check_interval    2
+        check_period            24x7
+        notification_interval   10
+        notification_period     24x7
+        notification_options    w,u,c,r
+        contact_groups          $2
+        }
+##############################windows$1#####################################
+define service{
+        host_name               $1
+        service_description     NSClient
+        check_command           check_nt!SERVICESTATE!-d SHOWALL -l NSClientpp
+        max_check_attempts      5
+        normal_check_interval   5
+        retry_check_interval    2
+        check_period            24x7
+        notification_interval   10
+        notification_period     24x7
+        notification_options    w,u,c,r
+        contact_groups          $2
+        }
+EOF
+}
+
+function Check_tcp_count
+{
+count=`netstat -an | grep tcp | grep EST | wc -l`
+if (( $count <= $1 ));then
+  echo "OK -connect counts is $count"
+  exit 0
+    elif [[ $count -gt $1 && count -le $2 ]]
+      then
+      echo "Warning -connect counts is $count"
+      exit 1
+    elif [ $count -gt $2 ]
+      then
+      echo "Critical -connect counts is $count"
+      exit 2
+fi
+}
+
+
+(($# <= 0)) && help      #[ $# -le 0 ] && help  or  [ -z $1 ] && help 
+
+while (($# > 0))
+do
+  clear
+  cprintf y "Enter Password:"
+  read -s pd
+    if [[ $pd == $ADMIN ]];then
+      case $1 in
+                --add_host)
+                ywaring "Add the will be monitored host information"
+                add_host
+                ;;
+                --batch_add_host)
+                ywaring "Batch add hosts to monitoring and control"
+                batch_add_host
+                ;;
+                --add_services)
+                clear
+                ywaring "Add services to monitoring and control"
+                add_services
+                ;;
+                --del_services)
+                clear
+                ywaring "Delete services to monitoring and control"
+                del_services
+                ;;
+                --del_all_services)
+                ywaring "Delete be monitored hosts all monitoring service"
+                del_all_services
+                ;;
+                *)
+                help
+                ;;
+      esac
+    elif [[ $pd == $USERS ]];then
+      case $1 in
+                --add_host)
+                ywaring "Add the will be monitored host information"
+                add_host
+                ;;
+                --batch_add_host)
+                ywaring "Batch add hosts to monitoring and control"
+                batch_add_host
+                ;;
+                --add_services)
+                clear
+                ywaring "Add services to monitoring and control"
+                add_services
+                ;;
+                *)
+                help
+                ;;
+      esac
+    else cprintf r "\npassword error."
+      exit 1
+    fi
+  break         # or shift
+done
+

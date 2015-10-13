@@ -1,0 +1,38 @@
+#!/bin/bash
+#admin-page: http://[your_ip]/xcache-admin
+#            username: admin
+#            password: admin
+#usage:
+#  1. put xcache-3.1.0 and xcache.ini in ~
+#  2. cd ~
+#  3. run command : source xcache-3.1.0
+cd ~
+if [ ! -d 'xcache-src' ]
+  then mkdir xcache-src
+fi
+cd ~/xcache-src
+
+echo 'download xcache-3.1.0, compile and install...'
+wget http://xcache.lighttpd.net/pub/Releases/3.1.0/xcache-3.1.0.tar.gz
+tar -zxf xcache-3.1.0.tar.gz
+cd xcache-3.1.0
+phpize
+./configure --enable-xcache
+make
+sudo make install
+
+echo 'set php.ini and restart...'
+cd ~
+sudo bash -c "cat xcache.ini >> /etc/php5/apache2/php.ini"
+sudo vim /etc/php5/apache2/php.ini #edit the ini, https://workku.atlassian.net/wiki/pages/viewpage.action?pageId=6717448
+sudo service apache2 restart
+
+echo 'install admin-manager site...'
+cd ~/xcache-src/xcache-3.1.0
+cp -r ./htdocs ~/xcache-admin
+cd /var/www
+sudo ln -s ~/xcache-admin xcache-admin
+
+echo 'rm source files'
+cd ~
+rm -r xcache-src

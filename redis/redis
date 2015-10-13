@@ -1,0 +1,39 @@
+#!/bin/bash
+#put redis in ~
+#usage:
+#     cd ~
+#     run command : source redis
+cd ~
+if [ ! -d 'redis-src' ]
+  then mkdir redis-src;
+fi
+cd ~/redis-src
+
+echo 'install redis-server...'
+wget http://download.redis.io/releases/redis-2.8.9.tar.gz
+tar -zxvf redis-2.8.9.tar.gz
+cd redis-2.8.9
+make
+sudo make install
+
+echo 'start redis-server...'
+redis-server
+
+echo 'php add redis extension...'
+wget -c http://pecl.php.net/get/redis-2.2.4.tgz
+tar  -zxvf redis-2.2.4.tgz
+cd  redis-2.2.4
+phpize
+./configure  --with-php-config=/usr/bin/php-config
+make
+sudo make install
+
+echo 'edit redis.ini'
+cd /etc/php5/apache2
+sudo bash -c "echo 'extension=redis.so' >>/etc/php5/apache2/conf.d/redis.ini"
+
+echo 'restart apache...'
+sudo service apache2 restart
+
+cd ~
+rm -r redis-src
